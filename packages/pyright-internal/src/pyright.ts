@@ -391,6 +391,29 @@ async function processArgs(): Promise<ExitStatus> {
     // If using outputjson, redirect all console output to stderr so it doesn't mess
     // up the JSON output, which goes to stdout.
     const output = args.outputjson ? new StderrConsole(logLevel) : new StandardConsole(logLevel);
+
+    // The package type verification uses a different path.
+    if (args['verifytypes'] !== undefined) {
+        const fileSystem = new PyrightFileSystem(
+            createFromRealFileSystem(tempFile, output, new ChokidarFileWatcherProvider(output))
+        );
+        const serviceProvider = createServiceProvider(fileSystem, output, tempFile);
+        return verifyPackageTypes(
+            serviceProvider,
+            args['verifytypes'] || '',
+            options,
+            !!args.outputjson,
+            minSeverityLevel,
+            args['ignoreexternal']
+        );
+    } else if (args['ignoreexternal'] !== undefined) {
+        console.error(`'--ignoreexternal' is valid only when used with '--verifytypes'`);
+        return ExitStatus.ParameterError;
+    }
+
+    const watch = args.watch !== undefined;
+    options.languageServerSettings.watchForSourceChanges = watch;
+    options.languageServerSettings.watchForConfigChanges = watch;
     
     // Check for cache environment variables
     const cacheEnabled = process.env.PYRIGHT_CACHE !== 'false';
@@ -414,25 +437,6 @@ async function processArgs(): Promise<ExitStatus> {
     const fileSystem = new PyrightFileSystem(baseFileSystem);
 
     const serviceProvider = createServiceProvider(fileSystem, output, tempFile);
-
-    // The package type verification uses a different path.
-    if (args['verifytypes'] !== undefined) {
-        return verifyPackageTypes(
-            serviceProvider,
-            args['verifytypes'] || '',
-            options,
-            !!args.outputjson,
-            minSeverityLevel,
-            args['ignoreexternal']
-        );
-    } else if (args['ignoreexternal'] !== undefined) {
-        console.error(`'--ignoreexternal' is valid only when used with '--verifytypes'`);
-        return ExitStatus.ParameterError;
-    }
-
-    const watch = args.watch !== undefined;
-    options.languageServerSettings.watchForSourceChanges = watch;
-    options.languageServerSettings.watchForConfigChanges = watch;
 
     const service = new AnalyzerService('<default>', serviceProvider, {
         console: output,
@@ -460,7 +464,7 @@ async function processArgs(): Promise<ExitStatus> {
         }
     }
 
-    return runSingleThreaded(args, options, service, minSeverityLevel, output);
+    return runSingleThreaded(args, options, service, minSeverityLevel, output, baseFileSystem, cacheEnabled);
 }
 
 async function runSingleThreaded(
@@ -468,7 +472,9 @@ async function runSingleThreaded(
     options: PyrightCommandLineOptions,
     service: AnalyzerService,
     minSeverityLevel: SeverityLevel,
-    output: ConsoleInterface
+    output: ConsoleInterface,
+    baseFileSystem?: any,
+    cacheEnabled?: boolean
 ) {
     const watch = args.watch !== undefined;
     const treatWarningsAsErrors = !!args.warnings;

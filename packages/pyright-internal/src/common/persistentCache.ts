@@ -69,7 +69,18 @@ export class PersistentCacheFileSystem extends RealFileSystem {
         const cachePath = path.join(this._cacheDir, 'files', cacheKey + '.json');
         if (fs.existsSync(cachePath)) {
             try {
-                const entry: FileCacheEntry = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+                const jsonContent = fs.readFileSync(cachePath, 'utf8');
+                const entry: FileCacheEntry = JSON.parse(jsonContent, (key, value) => {
+                    // Restore Maps
+                    if (value && typeof value === 'object' && value._type === 'Map') {
+                        return new Map(value.entries);
+                    }
+                    // Restore Sets
+                    if (value && typeof value === 'object' && value._type === 'Set') {
+                        return new Set(value.values);
+                    }
+                    return value;
+                });
 
                 if (this._isEntryValid(filePath, entry)) {
                     this._memoryCache.set(cacheKey, entry);
@@ -115,16 +126,60 @@ export class PersistentCacheFileSystem extends RealFileSystem {
             // Store in memory cache
             this._memoryCache.set(cacheKey, entry);
 
-            // Store in disk cache
+            // Store in disk cache with circular reference handling
             const cacheFilesDir = path.join(this._cacheDir, 'files');
             if (!fs.existsSync(cacheFilesDir)) {
                 fs.mkdirSync(cacheFilesDir, { recursive: true });
             }
 
             const cachePath = path.join(cacheFilesDir, cacheKey + '.json');
-            fs.writeFileSync(cachePath, JSON.stringify(entry, null, 2));
+            
+            // Use a replacer function to handle circular references
+            const seen = new WeakSet();
+            const serialized = JSON.stringify(entry, (key, value) => {
+                if (typeof value === 'object' && value !== null) {
+                    // Handle circular references
+                    if (seen.has(value)) {
+                        return '[Circular]';
+                    }
+                    seen.add(value);
+                    
+                    // Skip non-serializable values
+                    if (typeof value === 'function') {
+                        return undefined;
+                    }
+                    
+                    // Convert Map to object
+                    if (value instanceof Map) {
+                        return {
+                            _type: 'Map',
+                            entries: Array.from(value.entries())
+                        };
+                    }
+                    
+                    // Convert Set to array
+                    if (value instanceof Set) {
+                        return {
+                            _type: 'Set',
+                            values: Array.from(value)
+                        };
+                    }
+                }
+                return value;
+            }, 2);
+            
+            fs.writeFileSync(cachePath, serialized);
         } catch (e) {
-            // Ignore cache write errors (console logging removed)
+            // Log cache write errors to help with debugging
+            if (e instanceof Error) {
+                // Write error to a debug log
+                const errorLog = path.join(this._cacheDir, 'errors.log');
+                try {
+                    fs.appendFileSync(errorLog, `[${new Date().toISOString()}] ${filePath}: ${e.message}\n`);
+                } catch {
+                    // Ignore if we can't write the error log
+                }
+            }
         }
     }
 
@@ -224,8 +279,9 @@ export class PersistentCacheFileSystem extends RealFileSystem {
 
     private _getPyrightVersion(): string {
         try {
+            // Go up to pyright-internal/package.json from src/common/
             // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-            const packageJson = require('../../../package.json');
+            const packageJson = require('../../package.json');
             return packageJson.version;
         } catch {
             return 'unknown';
