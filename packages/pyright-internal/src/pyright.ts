@@ -414,26 +414,29 @@ async function processArgs(): Promise<ExitStatus> {
     const watch = args.watch !== undefined;
     options.languageServerSettings.watchForSourceChanges = watch;
     options.languageServerSettings.watchForConfigChanges = watch;
-    
+
     // Check for cache environment variables
     const cacheEnabled = process.env.PYRIGHT_CACHE !== 'false';
     const cacheDir = process.env.PYRIGHT_CACHE_DIR || '.pyright_cache';
-    
+
     // Create persistent cache filesystem or regular filesystem
     let baseFileSystem;
-    if (cacheEnabled && !watch) { // Disable cache in watch mode for now
+    if (cacheEnabled && !watch) {
+        // Disable cache in watch mode for now
         const caseSensitiveDetector = tempFile;
+        const cacheSerializer = (process.env.PYRIGHT_CACHE_SERIALIZER as 'simple' | 'complex') || 'simple';
         baseFileSystem = new PersistentCacheFileSystem(
             caseSensitiveDetector,
             output,
             new ChokidarFileWatcherProvider(output),
             cacheDir,
-            true
+            true,
+            cacheSerializer
         );
     } else {
         baseFileSystem = createFromRealFileSystem(tempFile, output, new ChokidarFileWatcherProvider(output));
     }
-    
+
     const fileSystem = new PyrightFileSystem(baseFileSystem);
 
     const serviceProvider = createServiceProvider(fileSystem, output, tempFile);
@@ -567,10 +570,14 @@ async function runSingleThreaded(
                 baseFileSystem.saveMetadata();
                 const stats = baseFileSystem.getStats();
                 if (cacheEnabled) {
-                    output.log(`\n[Cache Stats] Hits: ${stats.cacheHits}, Misses: ${stats.cacheMisses}, Hit Rate: ${(stats.hitRate * 100).toFixed(1)}%`);
+                    output.log(
+                        `\n[Cache Stats] Hits: ${stats.cacheHits}, Misses: ${stats.cacheMisses}, Hit Rate: ${(
+                            stats.hitRate * 100
+                        ).toFixed(1)}%`
+                    );
                 }
             }
-            
+
             exitStatus.resolve(errorCount > 0 ? ExitStatus.ErrorsReported : ExitStatus.NoErrors);
             return;
         } else if (!args.outputjson) {
@@ -701,7 +708,7 @@ async function runMultiThreaded(
 
                     // Save cache metadata and stats before exit (for multi-threaded mode)
                     // Note: Multi-threaded mode currently doesn't use persistent cache, but this is here for completeness
-                    
+
                     exitStatus.resolve(errorCount > 0 ? ExitStatus.ErrorsReported : ExitStatus.NoErrors);
                 }
             }

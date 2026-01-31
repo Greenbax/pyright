@@ -1,26 +1,29 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { CacheSerializer, SimpleSerializer } from './cacheSerializer';
 import { CaseSensitivityDetector } from './caseSensitivityDetector';
 import { ConsoleInterface } from './console';
 import { FileWatcherProvider } from './fileWatcher';
 import { RealFileSystem } from './realFileSystem';
 
 interface CacheMetadata {
-    version: string;           // Pyright version
-    pythonVersion?: string;    // Python version
-    timestamp: number;         // Cache creation time
-    fileCount: number;         // Number of cached files
-    configHash: string;        // Hash of pyright config
+    version: string; // Pyright version
+    pythonVersion?: string; // Python version
+    timestamp: number; // Cache creation time
+    fileCount: number; // Number of cached files
+    configHash: string; // Hash of pyright config
 }
 
 interface FileCacheEntry {
-    contentHash: string;       // SHA256 of file content
-    mtime: number;             // File modification time
-    size: number;              // File size in bytes
-    data: any;                 // Serialized parse/analysis data
-    dependencies: string[];    // List of dependent file paths
+    contentHash: string; // SHA256 of file content
+    mtime: number; // File modification time
+    size: number; // File size in bytes
+    data: any; // Serialized parse/analysis data
+    dependencies: string[]; // List of dependent file paths
 }
+
+export type SerializerType = 'simple' | 'complex';
 
 export class PersistentCacheFileSystem extends RealFileSystem {
     private _cacheDir: string;
@@ -29,18 +32,21 @@ export class PersistentCacheFileSystem extends RealFileSystem {
     private _cacheHits: number = 0;
     private _cacheMisses: number = 0;
     private _enabled: boolean;
+    private _serializerType: SerializerType;
 
     constructor(
         caseSensitiveDetector: CaseSensitivityDetector,
         console: ConsoleInterface,
         fileWatcherProvider: FileWatcherProvider,
         cacheDir: string = '.pyright_cache',
-        enabled: boolean = true
+        enabled: boolean = true,
+        serializerType: SerializerType = 'simple'
     ) {
         super(caseSensitiveDetector, console, fileWatcherProvider);
         this._cacheDir = path.resolve(cacheDir);
         this._memoryCache = new Map();
         this._enabled = enabled;
+        this._serializerType = serializerType;
 
         if (this._enabled) {
             this._initializeCache();
@@ -70,17 +76,14 @@ export class PersistentCacheFileSystem extends RealFileSystem {
         if (fs.existsSync(cachePath)) {
             try {
                 const jsonContent = fs.readFileSync(cachePath, 'utf8');
-                const entry: FileCacheEntry = JSON.parse(jsonContent, (key, value) => {
-                    // Restore Maps
-                    if (value && typeof value === 'object' && value._type === 'Map') {
-                        return new Map(value.entries);
-                    }
-                    // Restore Sets
-                    if (value && typeof value === 'object' && value._type === 'Set') {
-                        return new Set(value.values);
-                    }
-                    return value;
-                });
+
+                // Use appropriate deserializer based on configuration
+                let entry: FileCacheEntry;
+                if (this._serializerType === 'complex') {
+                    entry = CacheSerializer.deserialize(jsonContent);
+                } else {
+                    entry = SimpleSerializer.deserialize(jsonContent);
+                }
 
                 if (this._isEntryValid(filePath, entry)) {
                     this._memoryCache.set(cacheKey, entry);
@@ -126,48 +129,22 @@ export class PersistentCacheFileSystem extends RealFileSystem {
             // Store in memory cache
             this._memoryCache.set(cacheKey, entry);
 
-            // Store in disk cache with circular reference handling
+            // Store in disk cache with appropriate serializer
             const cacheFilesDir = path.join(this._cacheDir, 'files');
             if (!fs.existsSync(cacheFilesDir)) {
                 fs.mkdirSync(cacheFilesDir, { recursive: true });
             }
 
             const cachePath = path.join(cacheFilesDir, cacheKey + '.json');
-            
-            // Use a replacer function to handle circular references
-            const seen = new WeakSet();
-            const serialized = JSON.stringify(entry, (key, value) => {
-                if (typeof value === 'object' && value !== null) {
-                    // Handle circular references
-                    if (seen.has(value)) {
-                        return '[Circular]';
-                    }
-                    seen.add(value);
-                    
-                    // Skip non-serializable values
-                    if (typeof value === 'function') {
-                        return undefined;
-                    }
-                    
-                    // Convert Map to object
-                    if (value instanceof Map) {
-                        return {
-                            _type: 'Map',
-                            entries: Array.from(value.entries())
-                        };
-                    }
-                    
-                    // Convert Set to array
-                    if (value instanceof Set) {
-                        return {
-                            _type: 'Set',
-                            values: Array.from(value)
-                        };
-                    }
-                }
-                return value;
-            }, 2);
-            
+
+            // Use appropriate serializer based on configuration
+            let serialized: string;
+            if (this._serializerType === 'complex') {
+                serialized = CacheSerializer.serialize(entry);
+            } else {
+                serialized = SimpleSerializer.serialize(entry);
+            }
+
             fs.writeFileSync(cachePath, serialized);
         } catch (e) {
             // Log cache write errors to help with debugging
