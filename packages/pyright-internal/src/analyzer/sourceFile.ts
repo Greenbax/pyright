@@ -20,6 +20,7 @@ import { DiagnosticSink, TextRangeDiagnosticSink } from '../common/diagnosticSin
 import { FileSystem } from '../common/fileSystem';
 import { LogTracker, getPathForLogging } from '../common/logTracker';
 import { stripFileExtension } from '../common/pathUtils';
+import { PersistentCacheFileSystem } from '../common/persistentCache';
 import { convertOffsetsToRange, convertTextRangeToRange } from '../common/positionUtils';
 import { ServiceKeys } from '../common/serviceKeys';
 import { ServiceProvider } from '../common/serviceProvider';
@@ -694,6 +695,27 @@ export class SourceFile {
                 return false;
             }
 
+            // Try to load from persistent cache first
+            const fs = this.fileSystem;
+            // Check if the underlying filesystem (realFS) is PersistentCacheFileSystem
+            const cacheFS = (fs as any).realFS instanceof PersistentCacheFileSystem 
+                ? (fs as any).realFS 
+                : fs instanceof PersistentCacheFileSystem 
+                    ? fs 
+                    : null;
+            
+            if (cacheFS) {
+                const cachedData = cacheFS.getCachedData(this._uri.getFilePath());
+
+                if (cachedData && cachedData.parsedFileContents) {
+                    // For now, we cache file content hashes to detect changes,
+                    // but still need to re-parse (full AST caching needs custom serialization)
+                    // This provides cache validation and tracking for future enhancements
+                    logState.add('cache metadata hit');
+                    // Fall through to normal parsing for now
+                }
+            }
+
             const diagSink = this.createDiagnosticSink();
             let fileContents = this.getOpenFileContents();
             if (fileContents === undefined) {
@@ -792,6 +814,50 @@ export class SourceFile {
                         )
                     );
                 });
+
+                // After successful parse, cache the results
+                const cacheFS = (fs as any).realFS instanceof PersistentCacheFileSystem 
+                    ? (fs as any).realFS 
+                    : fs instanceof PersistentCacheFileSystem 
+                        ? fs 
+                        : null;
+                
+                if (cacheFS && this._writableData.parserOutput) {
+                    try {
+                        // Extract import file paths for dependency tracking
+                        const dependencies: string[] = [];
+                        if (this._writableData.imports) {
+                            for (const imp of this._writableData.imports) {
+                                if (imp && imp.resolvedUris) {
+                                    for (const uri of imp.resolvedUris) {
+                                        if (uri && uri !== undefined) {
+                                            dependencies.push(uri.getFilePath());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        cacheFS.setCachedData(
+                            this._uri.getFilePath(),
+                            {
+                                // Only cache serializable data, not complex AST objects
+                                parsedFileContents: this._writableData.parsedFileContents,
+                                lineCount: this._writableData.lineCount,
+                                // Store simple metadata instead of full objects
+                                hasParserOutput: !!this._writableData.parserOutput,
+                                hasImports: !!this._writableData.imports,
+                                // File content hash for validation
+                                contentLength: this._writableData.lastFileContentLength,
+                                contentHash: this._writableData.lastFileContentHash,
+                            },
+                            dependencies
+                        );
+                    } catch (e) {
+                        // Ignore cache write errors
+                        this._console.warn(`[PyrightCache] Failed to write cache for ${this._uri.getFilePath()}: ${e}`);
+                    }
+                }
             } catch (e: any) {
                 const message: string =
                     (e.stack ? e.stack.toString() : undefined) ||
