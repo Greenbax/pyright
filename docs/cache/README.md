@@ -73,6 +73,41 @@ jobs:
         run: npx pyright
 ```
 
+**For more CI examples, see [CI-EXAMPLES.md](./CI-EXAMPLES.md).**
+
+## Serialization Strategies
+
+Pyright cache supports two serialization modes to handle different caching needs:
+
+### Simple Serializer (Default) ⚡
+- **Speed**: Fast serialization/deserialization (~100ms for 1000 files)
+- **Size**: Small cache files (~1-2KB per file)
+- **Types**: Handles primitives, objects, arrays, Map, Set, Date, RegExp
+- **Best for**: Most use cases, CI/CD pipelines
+
+```bash
+PYRIGHT_CACHE=true pyright
+# or explicitly
+PYRIGHT_CACHE_SERIALIZER=simple PYRIGHT_CACHE=true pyright
+```
+
+### Complex Serializer 🔬
+- **Speed**: Moderate (~300ms for 1000 files)
+- **Size**: Larger cache files (~5-10KB per file)
+- **Types**: All Simple types + ParseNode, TextRange, TextRangeCollection, Diagnostic
+- **Best for**: Deep AST caching, development/testing scenarios
+
+```bash
+PYRIGHT_CACHE_SERIALIZER=complex PYRIGHT_CACHE=true pyright
+```
+
+**📖 [Read the complete Serialization Guide](./SERIALIZATION.md)** for detailed information on:
+- How to choose the right serializer
+- Handling custom and complex types
+- Performance characteristics
+- Extending serialization support
+- Troubleshooting serialization errors
+
 ## Environment Variables
 
 | Variable | Default | Description |
